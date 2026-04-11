@@ -77,9 +77,13 @@ checksum = "843867be96c8daad0d758b57df9392b6d8d271134fce549de6ce169ff98a92af"
 name = "cei"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "clap",
+ "libc",
  "nix",
  "rustix",
  "seccompiler",
+ "serde_json",
  "styrolite",
 ]
 
