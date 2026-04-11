@@ -1,99 +1,128 @@
 use std::ffi::CString;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 
-use crate::memfd_scratch::ScratchPage;
 use crate::policy::SandboxPolicy;
-use crate::ptrace_rewrite::rewrite_execve_path_arg;
+use crate::ptrace_rewrite::write_path_and_swap_pointer;
 use crate::seccomp_notify::{ExecNotification, SeccompListener};
 
-#[derive(Debug)]
+/// fd number injected into the supervised process for exec redirection.
+/// Must be high enough that it is unlikely to already be open in the child.
+const INJECTED_FD: u32 = 1000;
+
 pub struct Supervisor {
     policy: SandboxPolicy,
     listener: SeccompListener,
-    scratch: ScratchPage,
-    child_scratch_base: u64,
-    injected_fd: u32,
 }
 
 impl Supervisor {
-    pub fn new(
-        policy: SandboxPolicy,
-        listener: SeccompListener,
-        scratch: ScratchPage,
-        child_scratch_base: u64,
-        injected_fd: u32,
-    ) -> Self {
-        Self {
-            policy,
-            listener,
-            scratch,
-            child_scratch_base,
-            injected_fd,
-        }
+    pub fn new(policy: SandboxPolicy, listener: SeccompListener) -> Self {
+        Self { policy, listener }
     }
 
-    pub fn run_once(&self) -> Result<()> {
-        let notif = self.listener.recv()?;
-        self.handle_exec_notification(notif)
-    }
-
-    pub fn run_forever(&self) -> Result<()> {
+    /// Drive the notification loop until no more supervised processes exist,
+    /// then reap `child_pid` and return its exit code.
+    pub fn run_until_exit(&self, child_pid: libc::pid_t) -> Result<i32> {
         loop {
-            self.run_once()?;
+            match self.listener.recv() {
+                Ok(notif) => self.handle_notification(notif)?,
+                Err(_) => break,
+            }
         }
+
+        let mut status = 0i32;
+        unsafe { libc::waitpid(child_pid, &mut status, 0) };
+
+        Ok(if libc::WIFEXITED(status) {
+            libc::WEXITSTATUS(status)
+        } else {
+            128 + libc::WTERMSIG(status)
+        })
     }
 
-    fn handle_exec_notification(&self, notif: ExecNotification) -> Result<()> {
-        if notif.syscall_nr != libc::SYS_execve as i32 && notif.syscall_nr != libc::SYS_execveat as i32 {
+    fn handle_notification(&self, notif: ExecNotification) -> Result<()> {
+        if !self.listener.notif_id_valid(notif.id)? {
+            return Ok(());
+        }
+
+        let path_addr = path_arg_addr(notif).context("unsupported syscall for exec path")?;
+        let path = read_child_cstring(notif.pid as i32, path_addr)
+            .unwrap_or_else(|_| "<unknown>".to_string());
+
+        if let Some(replacement) = self.policy.exec_redirect(&path) {
+            eprintln!(
+                "[supervisor] pid={} redirect: {path} -> {replacement}",
+                notif.pid
+            );
+            let replacement = replacement.to_owned();
+            self.redirect_exec(notif, &replacement)?;
+        } else if self.policy.exec_allowed(&path) {
+            eprintln!("[supervisor] pid={} allow: {path}", notif.pid);
             self.listener.send_continue(notif.id)?;
-            return Ok(());
+        } else {
+            eprintln!("[supervisor] pid={} deny: {path}", notif.pid);
+            self.listener.send_errno(notif.id, libc::EPERM)?;
         }
 
-        if !self.listener.notif_id_valid(notif.id)? {
-            return Ok(());
-        }
-
-        let path = read_child_cstring(notif.pid as i32, notif.arg0)
-            .context("reading exec path from sandboxed task")?;
-
-        let open_path = CString::new(path.clone()).context("exec path contains NUL")?;
-        let host_fd = unsafe { libc::open(open_path.as_ptr(), libc::O_PATH | libc::O_CLOEXEC) };
-        if host_fd < 0 {
-            let _ = self.listener.send_errno(notif.id, libc::EPERM);
-            return Ok(());
-        }
-
-        if !self.policy.host_allows_write(std::path::Path::new(&path)) {
-            // Write confinement is primarily mount-namespace based. This policy hook
-            // is where host-side deny/redirect logic can be layered in.
-        }
-
-        let _remote_fd = self
-            .listener
-            .add_fd(notif.id, host_fd, self.injected_fd)
-            .context("injecting opened binary fd into sandbox task")?;
-        unsafe {
-            libc::close(host_fd);
-        }
-
-        let slot = self.scratch.reserve_slot();
-        self.scratch
-            .write_procfd_path(slot, self.injected_fd as i32)
-            .context("writing /proc/self/fd/N into scratch page")?;
-
-        let child_addr = self.child_scratch_base + slot.offset as u64;
-        rewrite_execve_path_arg(notif.pid as i32, child_addr)
-            .context("ptrace register rewrite for execve path")?;
-
-        if !self.listener.notif_id_valid(notif.id)? {
-            return Ok(());
-        }
-
-        self.listener.send_continue(notif.id)?;
         Ok(())
     }
+
+    /// Rewrite an execve in-flight to run `replacement` instead.
+    ///
+    /// Mechanism:
+    ///  1. Open `replacement` on the supervisor side.
+    ///  2. Inject the fd into the supervised process as `INJECTED_FD` (no
+    ///     O_CLOEXEC so the fd survives the exec).
+    ///  3. Write "/proc/self/fd/<INJECTED_FD>" onto the child's stack below the
+    ///     red zone via process_vm_writev (stack is always writable and present
+    ///     after any exec, unlike a pre-mapped scratch page).
+    ///  4. Swap the exec path pointer register (rdi for execve, rsi for
+    ///     execveat) to point at that stack location.
+    ///  5. Send CONTINUE — the kernel executes the replacement binary.
+    fn redirect_exec(&self, notif: ExecNotification, replacement: &str) -> Result<()> {
+        // Open the replacement binary in the supervisor.
+        let c_replacement = CString::new(replacement).context("replacement path contains NUL")?;
+        let host_fd =
+            unsafe { libc::open(c_replacement.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
+        if host_fd < 0 {
+            let e = std::io::Error::last_os_error();
+            let _ = self
+                .listener
+                .send_errno(notif.id, e.raw_os_error().unwrap_or(libc::ENOENT));
+            return Err(e).with_context(|| format!("opening replacement binary: {replacement}"));
+        }
+
+        // Inject the fd into the supervised process.  newfd_flags = 0: no
+        // O_CLOEXEC, so the fd is visible as /proc/self/fd/INJECTED_FD during exec.
+        let inject_result = self.listener.add_fd(notif.id, host_fd, INJECTED_FD, 0);
+        unsafe { libc::close(host_fd) };
+        inject_result.context("injecting replacement binary fd into supervised process")?;
+
+        // Write "/proc/self/fd/INJECTED_FD\0" to the child's stack and rewrite
+        // the path pointer register in one ptrace pass.
+        let path = format!("/proc/self/fd/{INJECTED_FD}\0");
+        write_path_and_swap_pointer(notif.pid as i32, notif.syscall_nr, path.as_bytes())
+            .context("rewriting exec path pointer register")?;
+
+        if !self.listener.notif_id_valid(notif.id)? {
+            return Ok(());
+        }
+
+        self.listener.send_continue(notif.id)
+    }
 }
+
+fn path_arg_addr(notif: ExecNotification) -> Result<u64> {
+    if notif.syscall_nr == libc::SYS_execve as i32 {
+        Ok(notif.arg0)
+    } else if notif.syscall_nr == libc::SYS_execveat as i32 {
+        Ok(notif.arg1)
+    } else {
+        bail!("unsupported syscall {}", notif.syscall_nr)
+    }
+}
+
+// --- child memory helpers ---
 
 fn read_child_cstring(pid: i32, child_addr: u64) -> Result<String> {
     let mut buf = vec![0u8; 4096];
@@ -106,22 +135,14 @@ fn read_child_cstring(pid: i32, child_addr: u64) -> Result<String> {
         iov_len: buf.len(),
     };
 
-    let read = unsafe {
-        libc::process_vm_readv(
-            pid,
-            &local_iov,
-            1,
-            &remote_iov,
-            1,
-            0,
-        )
-    };
-
-    if read < 0 {
-        return Err(std::io::Error::last_os_error()).context("process_vm_readv failed");
+    let n = unsafe { libc::process_vm_readv(pid, &local_iov, 1, &remote_iov, 1, 0) };
+    if n < 0 {
+        return Err(std::io::Error::last_os_error()).context("process_vm_readv");
     }
 
-    let valid = &buf[..read as usize];
-    let nul_pos = valid.iter().position(|b| *b == 0).unwrap_or(valid.len());
-    Ok(String::from_utf8_lossy(&valid[..nul_pos]).to_string())
+    let nul = buf[..n as usize]
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap_or(n as usize);
+    Ok(String::from_utf8_lossy(&buf[..nul]).into_owned())
 }

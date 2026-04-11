@@ -1,12 +1,19 @@
-use anyhow::Result;
+use anyhow::{Result, bail};
 use nix::sys::ptrace;
 use nix::sys::wait::waitpid;
 use nix::unistd::Pid;
 
-pub fn rewrite_execve_path_arg(pid_raw: i32, child_addr: u64) -> Result<()> {
+/// Write `path` into the child's stack (below the red zone) and rewrite the
+/// in-flight exec pathname pointer register to that location.
+///
+/// Writing to the stack rather than the original pathname buffer means this
+/// works regardless of where the original string lives (.rodata, heap, another
+/// stack frame, etc.) and regardless of whether the scratch page from a
+/// previous process image is still mapped.
+pub fn write_path_and_swap_pointer(pid_raw: i32, syscall_nr: i32, path: &[u8]) -> Result<()> {
     #[cfg(not(target_arch = "x86_64"))]
     {
-        let _ = (pid_raw, child_addr);
+        let _ = (pid_raw, syscall_nr, path);
         bail!("skeleton currently supports x86_64 register layout only");
     }
 
@@ -16,7 +23,39 @@ pub fn rewrite_execve_path_arg(pid_raw: i32, child_addr: u64) -> Result<()> {
         ptrace::attach(pid)?;
         let _status = waitpid(pid, None)?;
         let mut regs = ptrace::getregs(pid)?;
-        regs.rdi = child_addr;
+
+        // Place the path below the 128-byte x86-64 red zone, aligned to 8.
+        let target = (regs.rsp - 128 - path.len() as u64) & !7u64;
+
+        // Write the path bytes into the child's stack via process_vm_writev.
+        // The stack is always writable and present after any exec.
+        let local_iov = libc::iovec {
+            iov_base: path.as_ptr() as *mut libc::c_void,
+            iov_len: path.len(),
+        };
+        let remote_iov = libc::iovec {
+            iov_base: target as *mut libc::c_void,
+            iov_len: path.len(),
+        };
+        let written =
+            unsafe { libc::process_vm_writev(pid_raw, &local_iov, 1, &remote_iov, 1, 0) };
+        if written < 0 || written as usize != path.len() {
+            ptrace::detach(pid, None)?;
+            bail!(
+                "process_vm_writev to child stack failed: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+
+        if syscall_nr == libc::SYS_execve as i32 {
+            regs.rdi = target;
+        } else if syscall_nr == libc::SYS_execveat as i32 {
+            regs.rsi = target;
+        } else {
+            ptrace::detach(pid, None)?;
+            bail!("unexpected syscall in exec rewriter: {syscall_nr}");
+        }
+
         ptrace::setregs(pid, regs)?;
         ptrace::detach(pid, None)?;
         Ok(())

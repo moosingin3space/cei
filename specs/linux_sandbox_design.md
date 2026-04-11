@@ -24,7 +24,10 @@ The design uses multiple layers because no single mechanism covers all requireme
 
 3. ptrace (narrow use)
 - Used only for register rewrite during intercepted exec calls.
-- Rewrites path argument register (`rdi` on x86_64) to a supervisor-controlled buffer.
+- Swaps path argument register pointer (`rdi` for `execve`, `rsi` for `execveat` on x86_64)
+  to a supervisor-controlled buffer.
+- Avoids writing into the child's original path string, so read-only `.rodata` strings
+  are supported.
 
 4. memfd scratch page
 - Shared mapping used for TOCTOU-safe path strings.
@@ -54,7 +57,7 @@ This gives practical "deny writes outside current directory" behavior through fi
 - supervisor opens target binary in host namespace,
 - injects opened fd into child with `NOTIF_ADDFD`,
 - writes `/proc/self/fd/<injected_fd>` into memfd scratch slot,
-- rewrites child `rdi` to scratch slot address with ptrace,
+- swaps child exec path pointer register to scratch slot address with ptrace,
 - revalidates notification id,
 - sends `NOTIF_SEND` with `SECCOMP_USER_NOTIF_FLAG_CONTINUE`.
 7. Child resumes and kernel resolves the rewritten procfd path to injected inode.
@@ -79,7 +82,7 @@ Implemented in scaffold modules:
 - `src/styrolite_launcher.rs`: namespace + mount request generation.
 - `src/seccomp_notify.rs`: USER_NOTIF filter/listener/ioctl wrappers.
 - `src/memfd_scratch.rs`: sealed memfd slot allocator.
-- `src/ptrace_rewrite.rs`: x86_64 `rdi` rewrite helper.
+- `src/ptrace_rewrite.rs`: x86_64 exec path pointer swap helper (`rdi`/`rsi`).
 - `src/supervisor.rs`: notification processing loop skeleton.
 
 Still to complete for production wiring:

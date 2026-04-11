@@ -15,9 +15,18 @@ pub struct ExecNotification {
     pub pid: u32,
     pub syscall_nr: i32,
     pub arg0: u64,
+    pub arg1: u64,
 }
 
 impl SeccompListener {
+    pub fn from_owned_fd(fd: OwnedFd) -> Self {
+        Self { fd }
+    }
+
+    pub fn as_raw_fd(&self) -> i32 {
+        self.fd.as_raw_fd()
+    }
+
     pub fn install_exec_listener() -> Result<Self> {
         let filter = build_exec_only_user_notif_filter()?;
         let fd = install_filter_with_listener(&filter)?;
@@ -46,6 +55,7 @@ impl SeccompListener {
             pid: notif.pid,
             syscall_nr: notif.data.nr,
             arg0: notif.data.args[0],
+            arg1: notif.data.args[1],
         })
     }
 
@@ -70,13 +80,24 @@ impl SeccompListener {
         Err(err).context("SECCOMP_IOCTL_NOTIF_ID_VALID")
     }
 
-    pub fn add_fd(&self, notif_id: u64, srcfd: i32, child_fd: u32) -> Result<i32> {
+    /// Inject `srcfd` (supervisor-side) into the supervised process as `child_fd`.
+    ///
+    /// `newfd_flags` is applied to the fd in the target process.  Pass `0` when
+    /// the fd must survive exec (e.g. for `/proc/self/fd/N` path rewriting); pass
+    /// `O_CLOEXEC` for fds that should be cleaned up automatically.
+    pub fn add_fd(
+        &self,
+        notif_id: u64,
+        srcfd: i32,
+        child_fd: u32,
+        newfd_flags: u32,
+    ) -> Result<i32> {
         let mut addfd = libc::seccomp_notif_addfd {
             id: notif_id,
             flags: libc::SECCOMP_ADDFD_FLAG_SETFD as libc::c_uint,
             srcfd: srcfd as u32,
             newfd: child_fd,
-            newfd_flags: libc::O_CLOEXEC as u32,
+            newfd_flags,
         };
 
         let rc = unsafe {
@@ -189,7 +210,9 @@ fn install_filter_with_listener(filter: &[sock_filter]) -> Result<OwnedFd> {
         filter: filter.as_ptr() as *mut libc::sock_filter,
     };
 
-    let flags = libc::SECCOMP_FILTER_FLAG_NEW_LISTENER | libc::SECCOMP_FILTER_FLAG_TSYNC;
+    // NEW_LISTENER and TSYNC are mutually exclusive; NEW_LISTENER alone is sufficient
+    // for single-threaded children that exec immediately.
+    let flags = libc::SECCOMP_FILTER_FLAG_NEW_LISTENER;
     let ret = unsafe {
         libc::syscall(
             libc::SYS_seccomp,
