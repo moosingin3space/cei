@@ -70,7 +70,8 @@ fn redirect_replaces_exec_target() {
     cei()
         .args([
             "intercept",
-            "--redirect", "/usr/bin/false=/usr/bin/true",
+            "--redirect",
+            "/usr/bin/false=/usr/bin/true",
             "--",
             "/usr/bin/false",
         ])
@@ -84,7 +85,8 @@ fn redirect_can_invert_exit_code() {
     cei()
         .args([
             "intercept",
-            "--redirect", "/usr/bin/true=/usr/bin/false",
+            "--redirect",
+            "/usr/bin/true=/usr/bin/false",
             "--",
             "/usr/bin/true",
         ])
@@ -98,7 +100,8 @@ fn redirect_only_applies_to_named_path() {
     cei()
         .args([
             "intercept",
-            "--redirect", "/usr/bin/false=/usr/bin/false",
+            "--redirect",
+            "/usr/bin/false=/usr/bin/false",
             "--",
             "/usr/bin/true",
         ])
@@ -112,8 +115,10 @@ fn multiple_redirects_are_independent() {
     cei()
         .args([
             "intercept",
-            "--redirect", "/usr/bin/true=/usr/bin/false",
-            "--redirect", "/usr/bin/false=/usr/bin/true",
+            "--redirect",
+            "/usr/bin/true=/usr/bin/false",
+            "--redirect",
+            "/usr/bin/false=/usr/bin/true",
             "--",
             "/usr/bin/true",
         ])
@@ -131,9 +136,12 @@ fn grandchild_execs_are_intercepted() {
     cei()
         .args([
             "intercept",
-            "--redirect", "/usr/bin/echo=/usr/bin/true",
+            "--redirect",
+            "/usr/bin/echo=/usr/bin/true",
             "--",
-            "sh", "-c", "/usr/bin/echo should-be-silenced",
+            "sh",
+            "-c",
+            "/usr/bin/echo should-be-silenced",
         ])
         .assert()
         .success()

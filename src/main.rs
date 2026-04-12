@@ -257,8 +257,8 @@ fn detach_and_harden(path: &Path) -> Result<()> {
     //    inside the user namespace; zero it out.  Outside a user namespace
     //    the sets are already empty and set_capabilities is a no-op.
     if let Ok(mut caps) = rustix::thread::capabilities(None) {
-        caps.effective   = rustix::thread::CapabilityFlags::empty();
-        caps.permitted   = rustix::thread::CapabilityFlags::empty();
+        caps.effective = rustix::thread::CapabilityFlags::empty();
+        caps.permitted = rustix::thread::CapabilityFlags::empty();
         caps.inheritable = rustix::thread::CapabilityFlags::empty();
         rustix::thread::set_capabilities(None, caps).ok();
     }
@@ -291,13 +291,13 @@ fn recv_fd(sock: RawFd) -> Result<OwnedFd> {
         recvmsg::<()>(sock, &mut iov, Some(&mut cmsg_buf), MsgFlags::empty()).context("recvmsg")?;
 
     for cmsg in msg.cmsgs()? {
-        if let ControlMessageOwned::ScmRights(fds) = cmsg {
-            if let Some(&fd) = fds.first() {
-                // SAFETY: fd was received from the kernel via SCM_RIGHTS and is
-                // a freshly allocated fd owned exclusively by this process.
-                #[expect(unsafe_code)]
-                return Ok(unsafe { OwnedFd::from_raw_fd(fd) });
-            }
+        if let ControlMessageOwned::ScmRights(fds) = cmsg
+            && let Some(&fd) = fds.first()
+        {
+            // SAFETY: fd was received from the kernel via SCM_RIGHTS and is
+            // a freshly allocated fd owned exclusively by this process.
+            #[expect(unsafe_code)]
+            return Ok(unsafe { OwnedFd::from_raw_fd(fd) });
         }
     }
     bail!("recvmsg: no fd received in SCM_RIGHTS message")
