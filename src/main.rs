@@ -30,7 +30,7 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Commands {
     /// Run a command under execve interception.
-    Run {
+    Intercept {
         /// Redirect execve of FROM to TO.  Repeatable.  Both paths must be absolute.
         /// Example: --redirect /usr/bin/python3=/opt/python/bin/python3.12
         #[arg(
@@ -51,7 +51,7 @@ enum Commands {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Run {
+        Commands::Intercept {
             redirects,
             command,
             args,
