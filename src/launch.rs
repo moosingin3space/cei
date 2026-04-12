@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use nix::fcntl::{FcntlArg, FdFlag, fcntl};
 use nix::unistd::execvp;
+use tracing::warn;
 
 /// Variables to strip from the environment before entering the sandbox.
 const VARS_TO_STRIP: &[&str] = &[
@@ -50,10 +51,7 @@ pub fn run_launch(config: LaunchConfig) -> Result<()> {
     let (cei_arg, _fallback_path) = match open_cei_fd() {
         Ok(fd) => (CeiArg::Fd(fd), None),
         Err(e) => {
-            eprintln!(
-                "cei: warning: could not open /proc/self/exe ({e:#}); \
-                       falling back to host path"
-            );
+            warn!(message = "cei: warning: could not open /proc/self/exe, falling back to host path", error = %e);
             let path = fs::read_link("/proc/self/exe")
                 .context("resolving cei binary path via /proc/self/exe")?;
             (CeiArg::Path(Path::new("")), Some(path))
@@ -276,10 +274,10 @@ fn check_ptrace_scope() {
     };
     let val: i32 = s.trim().parse().unwrap_or(0);
     if val >= 2 {
-        eprintln!(
-            "cei: warning: /proc/sys/kernel/yama/ptrace_scope={val} — \
-             ptrace is blocked system-wide regardless of parent-child relationship. \
-             cei intercept will fail to attach. Set to 0 or 1 to use cei."
+        warn!(
+            message = "cei: warning: ptrace is blocked system-wide",
+            ptrace_scope = val,
+            advice = "Set to 0 or 1 to use cei"
         );
     }
 }

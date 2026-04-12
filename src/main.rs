@@ -22,6 +22,7 @@ use nix::sys::socket::{
     sendmsg, socketpair,
 };
 use nix::unistd::{ForkResult, execvp, fork};
+use tracing::error;
 
 #[derive(Debug, Parser)]
 #[command(name = "cei")]
@@ -103,6 +104,7 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
+    tracing_subscriber::fmt::init();
     let cli = Cli::parse();
     match cli.command {
         Commands::Launch {
@@ -187,7 +189,7 @@ fn run_sandboxed(
             drop(parent_sock);
             // child_main never returns on success (exec replaces us).
             let e = child_main(child_sock.as_raw_fd(), command, args).unwrap_err();
-            eprintln!("cei: child setup failed: {e:#}");
+            error!(message = "cei: child setup failed", error = %e);
             std::process::exit(1);
         }
         ForkResult::Parent { child: child_pid } => {

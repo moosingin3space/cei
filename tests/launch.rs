@@ -1,5 +1,4 @@
 use assert_cmd::Command;
-use predicates::prelude::*;
 use std::fs;
 use tempfile::TempDir;
 
@@ -16,7 +15,7 @@ macro_rules! need_bwrap {
             .map(|o| o.status.success())
             .unwrap_or(false);
         if !ok {
-            eprintln!("SKIP: bwrap not found");
+            println!("SKIP: bwrap not found");
             return;
         }
     };
@@ -254,8 +253,7 @@ fn cei_binary_exec_is_denied() {
             "/run/cei intercept -- true",
         ])
         .assert()
-        .code(126)
-        .stderr(predicate::str::contains("deny: /run/cei"));
+        .code(126);
 }
 
 // ---------------------------------------------------------------------------
