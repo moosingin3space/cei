@@ -10,6 +10,7 @@ use nix::unistd::Pid;
 use crate::policy::SandboxPolicy;
 use crate::ptrace_rewrite::write_path_and_swap_pointer;
 use crate::seccomp_notify::{ExecNotification, SeccompListener};
+use tracing::{debug, trace};
 
 pub struct Supervisor {
     policy: SandboxPolicy,
@@ -46,17 +47,14 @@ impl Supervisor {
             .unwrap_or_else(|_| "<unknown>".to_string());
 
         if let Some(replacement) = self.policy.exec_redirect(&path) {
-            eprintln!(
-                "[supervisor] pid={} redirect: {path} -> {replacement}",
-                notif.pid
-            );
+            trace!(pid = notif.pid, path = %path, replacement = %replacement, "redirect: {path} -> {replacement}");
             let replacement = replacement.to_owned();
             self.redirect_exec(notif, &replacement)?;
         } else if self.policy.exec_allowed(&path) {
-            eprintln!("[supervisor] pid={} allow: {path}", notif.pid);
+            debug!(pid = notif.pid, path = %path, "allow: {path}");
             self.listener.send_continue(notif.id)?;
         } else {
-            eprintln!("[supervisor] pid={} deny: {path}", notif.pid);
+            debug!(pid = notif.pid, path = %path, "deny: {path}");
             self.listener.send_errno(notif.id, libc::EPERM)?;
         }
 
