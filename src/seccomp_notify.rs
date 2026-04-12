@@ -35,10 +35,6 @@ impl SeccompListener {
         Ok(Self { fd })
     }
 
-    pub fn as_fd(&self) -> &OwnedFd {
-        &self.fd
-    }
-
     pub fn recv(&self) -> Result<ExecNotification> {
         // SAFETY: seccomp_notif is a C struct with no invalid bit patterns;
         // zero-initialising it satisfies the kernel's requirement that reserved
