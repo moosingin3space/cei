@@ -1,6 +1,11 @@
-use std::ffi::CString;
+use std::fs::File;
+use std::io::IoSliceMut;
+use std::os::fd::AsRawFd;
 
 use anyhow::{Context, Result, bail};
+use nix::sys::uio::{RemoteIoVec, process_vm_readv};
+use nix::sys::wait::{WaitStatus, waitpid};
+use nix::unistd::Pid;
 
 use crate::policy::SandboxPolicy;
 use crate::ptrace_rewrite::write_path_and_swap_pointer;
@@ -22,7 +27,7 @@ impl Supervisor {
 
     /// Drive the notification loop until no more supervised processes exist,
     /// then reap `child_pid` and return its exit code.
-    pub fn run_until_exit(&self, child_pid: libc::pid_t) -> Result<i32> {
+    pub fn run_until_exit(&self, child_pid: i32) -> Result<i32> {
         loop {
             match self.listener.recv() {
                 Ok(notif) => self.handle_notification(notif)?,
@@ -30,13 +35,11 @@ impl Supervisor {
             }
         }
 
-        let mut status = 0i32;
-        unsafe { libc::waitpid(child_pid, &mut status, 0) };
-
-        Ok(if libc::WIFEXITED(status) {
-            libc::WEXITSTATUS(status)
-        } else {
-            128 + libc::WTERMSIG(status)
+        let status = waitpid(Some(Pid::from_raw(child_pid)), None)?;
+        Ok(match status {
+            WaitStatus::Exited(_, code) => code,
+            WaitStatus::Signaled(_, sig, _) => 128 + sig as i32,
+            _ => 0,
         })
     }
 
@@ -80,22 +83,21 @@ impl Supervisor {
     ///     execveat) to point at that stack location.
     ///  5. Send CONTINUE — the kernel executes the replacement binary.
     fn redirect_exec(&self, notif: ExecNotification, replacement: &str) -> Result<()> {
-        // Open the replacement binary in the supervisor.
-        let c_replacement = CString::new(replacement).context("replacement path contains NUL")?;
-        let host_fd =
-            unsafe { libc::open(c_replacement.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
-        if host_fd < 0 {
-            let e = std::io::Error::last_os_error();
-            let _ = self
-                .listener
-                .send_errno(notif.id, e.raw_os_error().unwrap_or(libc::ENOENT));
-            return Err(e).with_context(|| format!("opening replacement binary: {replacement}"));
-        }
+        // Open the replacement binary in the supervisor (read-only; std sets CLOEXEC).
+        let host_file = File::open(replacement)
+            .or_else(|e| {
+                let errno = e.raw_os_error().unwrap_or(libc::ENOENT);
+                let _ = self.listener.send_errno(notif.id, errno);
+                Err(e)
+            })
+            .with_context(|| format!("opening replacement binary: {replacement}"))?;
 
         // Inject the fd into the supervised process.  newfd_flags = 0: no
         // O_CLOEXEC, so the fd is visible as /proc/self/fd/INJECTED_FD during exec.
-        let inject_result = self.listener.add_fd(notif.id, host_fd, INJECTED_FD, 0);
-        unsafe { libc::close(host_fd) };
+        let inject_result = self
+            .listener
+            .add_fd(notif.id, host_file.as_raw_fd(), INJECTED_FD, 0);
+        drop(host_file); // supervisor's copy no longer needed
         inject_result.context("injecting replacement binary fd into supervised process")?;
 
         // Write "/proc/self/fd/INJECTED_FD\0" to the child's stack and rewrite
@@ -126,23 +128,14 @@ fn path_arg_addr(notif: ExecNotification) -> Result<u64> {
 
 fn read_child_cstring(pid: i32, child_addr: u64) -> Result<String> {
     let mut buf = vec![0u8; 4096];
-    let local_iov = libc::iovec {
-        iov_base: buf.as_mut_ptr().cast(),
-        iov_len: buf.len(),
-    };
-    let remote_iov = libc::iovec {
-        iov_base: child_addr as *mut libc::c_void,
-        iov_len: buf.len(),
-    };
+    let remote_iov = [RemoteIoVec {
+        base: child_addr as usize,
+        len: buf.len(),
+    }];
+    let mut local_iov = [IoSliceMut::new(&mut buf)];
+    let n = process_vm_readv(Pid::from_raw(pid), &mut local_iov, &remote_iov)
+        .context("process_vm_readv")?;
 
-    let n = unsafe { libc::process_vm_readv(pid, &local_iov, 1, &remote_iov, 1, 0) };
-    if n < 0 {
-        return Err(std::io::Error::last_os_error()).context("process_vm_readv");
-    }
-
-    let nul = buf[..n as usize]
-        .iter()
-        .position(|&b| b == 0)
-        .unwrap_or(n as usize);
+    let nul = buf[..n].iter().position(|&b| b == 0).unwrap_or(n);
     Ok(String::from_utf8_lossy(&buf[..nul]).into_owned())
 }

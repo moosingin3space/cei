@@ -1,5 +1,8 @@
-use anyhow::{Result, bail};
+use std::io::IoSlice;
+
+use anyhow::{Context, Result, bail};
 use nix::sys::ptrace;
+use nix::sys::uio::{RemoteIoVec, process_vm_writev};
 use nix::sys::wait::waitpid;
 use nix::unistd::Pid;
 
@@ -29,21 +32,24 @@ pub fn write_path_and_swap_pointer(pid_raw: i32, syscall_nr: i32, path: &[u8]) -
 
         // Write the path bytes into the child's stack via process_vm_writev.
         // The stack is always writable and present after any exec.
-        let local_iov = libc::iovec {
-            iov_base: path.as_ptr() as *mut libc::c_void,
-            iov_len: path.len(),
+        let local_iov = [IoSlice::new(path)];
+        let remote_iov = [RemoteIoVec {
+            base: target as usize,
+            len: path.len(),
+        }];
+        let written = match process_vm_writev(pid, &local_iov, &remote_iov) {
+            Ok(n) => n,
+            Err(e) => {
+                ptrace::detach(pid, None)?;
+                return Err(e).context("process_vm_writev to child stack");
+            }
         };
-        let remote_iov = libc::iovec {
-            iov_base: target as *mut libc::c_void,
-            iov_len: path.len(),
-        };
-        let written =
-            unsafe { libc::process_vm_writev(pid_raw, &local_iov, 1, &remote_iov, 1, 0) };
-        if written < 0 || written as usize != path.len() {
+        if written != path.len() {
             ptrace::detach(pid, None)?;
             bail!(
-                "process_vm_writev to child stack failed: {}",
-                std::io::Error::last_os_error()
+                "process_vm_writev wrote {} of {} bytes",
+                written,
+                path.len()
             );
         }
 

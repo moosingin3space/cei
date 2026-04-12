@@ -1,3 +1,5 @@
+#![expect(unsafe_code)]
+
 use std::mem::size_of;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
@@ -38,7 +40,12 @@ impl SeccompListener {
     }
 
     pub fn recv(&self) -> Result<ExecNotification> {
+        // SAFETY: seccomp_notif is a C struct with no invalid bit patterns;
+        // zero-initialising it satisfies the kernel's requirement that reserved
+        // fields are cleared before the ioctl.
         let mut notif: libc::seccomp_notif = unsafe { std::mem::zeroed() };
+        // SAFETY: fd is a valid seccomp listener; notif is a correctly-sized
+        // output buffer for SECCOMP_IOCTL_NOTIF_RECV.
         let rc = unsafe {
             libc::ioctl(
                 self.fd.as_raw_fd(),
@@ -61,6 +68,8 @@ impl SeccompListener {
 
     pub fn notif_id_valid(&self, id: u64) -> Result<bool> {
         let mut id_copy = id;
+        // SAFETY: fd is a valid seccomp listener; id_copy is the correct type
+        // for SECCOMP_IOCTL_NOTIF_ID_VALID.
         let rc = unsafe {
             libc::ioctl(
                 self.fd.as_raw_fd(),
@@ -100,6 +109,8 @@ impl SeccompListener {
             newfd_flags,
         };
 
+        // SAFETY: fd is a valid seccomp listener; addfd is correctly initialised
+        // for SECCOMP_IOCTL_NOTIF_ADDFD.
         let rc = unsafe {
             libc::ioctl(
                 self.fd.as_raw_fd(),
@@ -121,6 +132,8 @@ impl SeccompListener {
             flags: libc::SECCOMP_USER_NOTIF_FLAG_CONTINUE as u32,
         };
 
+        // SAFETY: fd is a valid seccomp listener; resp is correctly initialised
+        // for SECCOMP_IOCTL_NOTIF_SEND.
         let rc = unsafe {
             libc::ioctl(
                 self.fd.as_raw_fd(),
@@ -144,6 +157,8 @@ impl SeccompListener {
             flags: 0,
         };
 
+        // SAFETY: fd is a valid seccomp listener; resp is correctly initialised
+        // for SECCOMP_IOCTL_NOTIF_SEND.
         let rc = unsafe {
             libc::ioctl(
                 self.fd.as_raw_fd(),
@@ -213,6 +228,9 @@ fn install_filter_with_listener(filter: &[sock_filter]) -> Result<OwnedFd> {
     // NEW_LISTENER and TSYNC are mutually exclusive; NEW_LISTENER alone is sufficient
     // for single-threaded children that exec immediately.
     let flags = libc::SECCOMP_FILTER_FLAG_NEW_LISTENER;
+    // SAFETY: prog points to a valid sock_fprog whose filter slice lives for
+    // the duration of this call.  No safe wrapper exists for the seccomp(2)
+    // syscall with SECCOMP_SET_MODE_FILTER | SECCOMP_FILTER_FLAG_NEW_LISTENER.
     let ret = unsafe {
         libc::syscall(
             libc::SYS_seccomp,
@@ -226,6 +244,8 @@ fn install_filter_with_listener(filter: &[sock_filter]) -> Result<OwnedFd> {
         return Err(std::io::Error::last_os_error()).context("installing seccomp listener");
     }
 
+    // SAFETY: the kernel returned a new, valid file descriptor that this
+    // process now owns exclusively.
     let fd = unsafe { OwnedFd::from_raw_fd(ret as i32) };
     Ok(fd)
 }
