@@ -31,7 +31,13 @@ fn exits_zero_on_success() {
     need_bwrap!();
     let project = TempDir::new().unwrap();
     cei()
-        .args(["launch", "--project", project.path().to_str().unwrap(), "--", "true"])
+        .args([
+            "launch",
+            "--project",
+            project.path().to_str().unwrap(),
+            "--",
+            "true",
+        ])
         .assert()
         .success();
 }
@@ -41,7 +47,13 @@ fn exits_nonzero_on_failure() {
     need_bwrap!();
     let project = TempDir::new().unwrap();
     cei()
-        .args(["launch", "--project", project.path().to_str().unwrap(), "--", "false"])
+        .args([
+            "launch",
+            "--project",
+            project.path().to_str().unwrap(),
+            "--",
+            "false",
+        ])
         .assert()
         .failure();
 }
@@ -51,8 +63,15 @@ fn propagates_exit_code() {
     need_bwrap!();
     let project = TempDir::new().unwrap();
     cei()
-        .args(["launch", "--project", project.path().to_str().unwrap(),
-               "--", "sh", "-c", "exit 7"])
+        .args([
+            "launch",
+            "--project",
+            project.path().to_str().unwrap(),
+            "--",
+            "sh",
+            "-c",
+            "exit 7",
+        ])
         .assert()
         .code(7);
 }
@@ -66,8 +85,15 @@ fn cwd_is_workspace() {
     need_bwrap!();
     let project = TempDir::new().unwrap();
     cei()
-        .args(["launch", "--project", project.path().to_str().unwrap(),
-               "--", "sh", "-c", "pwd"])
+        .args([
+            "launch",
+            "--project",
+            project.path().to_str().unwrap(),
+            "--",
+            "sh",
+            "-c",
+            "pwd",
+        ])
         .assert()
         .success()
         .stdout("/workspace\n");
@@ -78,8 +104,15 @@ fn home_is_workspace() {
     need_bwrap!();
     let project = TempDir::new().unwrap();
     cei()
-        .args(["launch", "--project", project.path().to_str().unwrap(),
-               "--", "sh", "-c", r#"printf '%s\n' "$HOME""#])
+        .args([
+            "launch",
+            "--project",
+            project.path().to_str().unwrap(),
+            "--",
+            "sh",
+            "-c",
+            r#"printf '%s\n' "$HOME""#,
+        ])
         .assert()
         .success()
         .stdout("/workspace\n");
@@ -94,8 +127,15 @@ fn etc_is_readonly() {
     need_bwrap!();
     let project = TempDir::new().unwrap();
     cei()
-        .args(["launch", "--project", project.path().to_str().unwrap(),
-               "--", "sh", "-c", "touch /etc/cei-write-test"])
+        .args([
+            "launch",
+            "--project",
+            project.path().to_str().unwrap(),
+            "--",
+            "sh",
+            "-c",
+            "touch /etc/cei-write-test",
+        ])
         .assert()
         .failure();
 }
@@ -105,8 +145,15 @@ fn workspace_is_writable_and_visible_on_host() {
     need_bwrap!();
     let project = TempDir::new().unwrap();
     cei()
-        .args(["launch", "--project", project.path().to_str().unwrap(),
-               "--", "sh", "-c", "echo sandbox-output > /workspace/result.txt"])
+        .args([
+            "launch",
+            "--project",
+            project.path().to_str().unwrap(),
+            "--",
+            "sh",
+            "-c",
+            "echo sandbox-output > /workspace/result.txt",
+        ])
         .assert()
         .success();
 
@@ -123,9 +170,15 @@ fn tmp_is_writable_scratch() {
     let _ = fs::remove_file(&host_tmp_marker); // clean up any leftover
 
     cei()
-        .args(["launch", "--project", project.path().to_str().unwrap(),
-               "--", "sh", "-c",
-               &format!("echo leak > {}", host_tmp_marker.display())])
+        .args([
+            "launch",
+            "--project",
+            project.path().to_str().unwrap(),
+            "--",
+            "sh",
+            "-c",
+            &format!("echo leak > {}", host_tmp_marker.display()),
+        ])
         .assert()
         .success();
 
@@ -147,9 +200,15 @@ fn network_namespace_contains_only_loopback() {
     // In an unshared network namespace only "lo" is present.
     // awk skips the two header lines and counts non-loopback interfaces.
     cei()
-        .args(["launch", "--project", project.path().to_str().unwrap(),
-               "--", "sh", "-c",
-               r"awk 'NR>2 && !/lo:/ {c++} END {print c+0}' /proc/net/dev"])
+        .args([
+            "launch",
+            "--project",
+            project.path().to_str().unwrap(),
+            "--",
+            "sh",
+            "-c",
+            r"awk 'NR>2 && !/lo:/ {c++} END {print c+0}' /proc/net/dev",
+        ])
         .assert()
         .success()
         .stdout("0\n");
@@ -165,8 +224,15 @@ fn cei_binary_is_visible_at_run_cei() {
     let project = TempDir::new().unwrap();
     // The binary must be readable (we only deny exec, not read).
     cei()
-        .args(["launch", "--project", project.path().to_str().unwrap(),
-               "--", "sh", "-c", "test -f /run/cei && echo found"])
+        .args([
+            "launch",
+            "--project",
+            project.path().to_str().unwrap(),
+            "--",
+            "sh",
+            "-c",
+            "test -f /run/cei && echo found",
+        ])
         .assert()
         .success()
         .stdout("found\n");
@@ -178,8 +244,15 @@ fn cei_binary_exec_is_denied() {
     let project = TempDir::new().unwrap();
     // Attempting to exec /run/cei returns EPERM; the shell exits with code 126.
     cei()
-        .args(["launch", "--project", project.path().to_str().unwrap(),
-               "--", "sh", "-c", "/run/cei intercept -- true"])
+        .args([
+            "launch",
+            "--project",
+            project.path().to_str().unwrap(),
+            "--",
+            "sh",
+            "-c",
+            "/run/cei intercept -- true",
+        ])
         .assert()
         .code(126)
         .stderr(predicate::str::contains("deny: /run/cei"));
@@ -194,10 +267,15 @@ fn redirect_is_applied_inside_sandbox() {
     need_bwrap!();
     let project = TempDir::new().unwrap();
     cei()
-        .args(["launch",
-               "--project", project.path().to_str().unwrap(),
-               "--redirect", "/usr/bin/false=/usr/bin/true",
-               "--", "/usr/bin/false"])
+        .args([
+            "launch",
+            "--project",
+            project.path().to_str().unwrap(),
+            "--redirect",
+            "/usr/bin/false=/usr/bin/true",
+            "--",
+            "/usr/bin/false",
+        ])
         .assert()
         .success();
 }
@@ -214,10 +292,17 @@ fn extra_ro_bind_is_readable() {
     fs::write(&host_file, "host-content\n").unwrap();
 
     cei()
-        .args(["launch",
-               "--project", project.path().to_str().unwrap(),
-               "--ro-bind", &format!("{}=/tmp/imported", host_file.display()),
-               "--", "sh", "-c", "cat /tmp/imported"])
+        .args([
+            "launch",
+            "--project",
+            project.path().to_str().unwrap(),
+            "--ro-bind",
+            &format!("{}=/tmp/imported", host_file.display()),
+            "--",
+            "sh",
+            "-c",
+            "cat /tmp/imported",
+        ])
         .assert()
         .success()
         .stdout("host-content\n");
@@ -231,10 +316,17 @@ fn extra_ro_bind_is_not_writable() {
     fs::write(&host_file, "original\n").unwrap();
 
     cei()
-        .args(["launch",
-               "--project", project.path().to_str().unwrap(),
-               "--ro-bind", &format!("{}=/tmp/imported", host_file.display()),
-               "--", "sh", "-c", "echo overwrite > /tmp/imported"])
+        .args([
+            "launch",
+            "--project",
+            project.path().to_str().unwrap(),
+            "--ro-bind",
+            &format!("{}=/tmp/imported", host_file.display()),
+            "--",
+            "sh",
+            "-c",
+            "echo overwrite > /tmp/imported",
+        ])
         .assert()
         .failure();
 
@@ -249,10 +341,17 @@ fn extra_bind_is_writable_and_reflected_on_host() {
     let host_dir = TempDir::new().unwrap();
 
     cei()
-        .args(["launch",
-               "--project", project.path().to_str().unwrap(),
-               "--bind", &format!("{}=/mnt/shared", host_dir.path().display()),
-               "--", "sh", "-c", "echo shared-write > /mnt/shared/out.txt"])
+        .args([
+            "launch",
+            "--project",
+            project.path().to_str().unwrap(),
+            "--bind",
+            &format!("{}=/mnt/shared", host_dir.path().display()),
+            "--",
+            "sh",
+            "-c",
+            "echo shared-write > /mnt/shared/out.txt",
+        ])
         .assert()
         .success();
 

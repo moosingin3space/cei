@@ -24,11 +24,8 @@ impl Supervisor {
     /// Drive the notification loop until no more supervised processes exist,
     /// then reap `child_pid` and return its exit code.
     pub fn run_until_exit(&self, child_pid: i32) -> Result<i32> {
-        loop {
-            match self.listener.recv() {
-                Ok(notif) => self.handle_notification(notif)?,
-                Err(_) => break,
-            }
+        while let Ok(notif) = self.listener.recv() {
+            self.handle_notification(notif)?;
         }
 
         let status = waitpid(Some(Pid::from_raw(child_pid)), None)?;
@@ -81,10 +78,9 @@ impl Supervisor {
     fn redirect_exec(&self, notif: ExecNotification, replacement: &str) -> Result<()> {
         // Open the replacement binary in the supervisor (read-only; std sets CLOEXEC).
         let host_file = File::open(replacement)
-            .or_else(|e| {
+            .inspect_err(|e| {
                 let errno = e.raw_os_error().unwrap_or(libc::ENOENT);
                 let _ = self.listener.send_errno(notif.id, errno);
-                Err(e)
             })
             .with_context(|| format!("opening replacement binary: {replacement}"))?;
 

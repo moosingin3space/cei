@@ -50,8 +50,10 @@ pub fn run_launch(config: LaunchConfig) -> Result<()> {
     let (cei_arg, _fallback_path) = match open_cei_fd() {
         Ok(fd) => (CeiArg::Fd(fd), None),
         Err(e) => {
-            eprintln!("cei: warning: could not open /proc/self/exe ({e:#}); \
-                       falling back to host path");
+            eprintln!(
+                "cei: warning: could not open /proc/self/exe ({e:#}); \
+                       falling back to host path"
+            );
             let path = fs::read_link("/proc/self/exe")
                 .context("resolving cei binary path via /proc/self/exe")?;
             (CeiArg::Path(Path::new("")), Some(path))
@@ -67,8 +69,8 @@ pub fn run_launch(config: LaunchConfig) -> Result<()> {
 
     let argv = build_bwrap_argv(&config, &cei_arg);
 
-    let bwrap_c = CString::new(bwrap.as_os_str().as_bytes())
-        .context("bwrap path contains NUL byte")?;
+    let bwrap_c =
+        CString::new(bwrap.as_os_str().as_bytes()).context("bwrap path contains NUL byte")?;
     let c_argv: Vec<CString> = argv
         .iter()
         .map(|a| CString::new(a.as_bytes()).context("bwrap argument contains NUL byte"))
