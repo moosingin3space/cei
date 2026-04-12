@@ -11,10 +11,6 @@ use crate::policy::SandboxPolicy;
 use crate::ptrace_rewrite::write_path_and_swap_pointer;
 use crate::seccomp_notify::{ExecNotification, SeccompListener};
 
-/// fd number injected into the supervised process for exec redirection.
-/// Must be high enough that it is unlikely to already be open in the child.
-const INJECTED_FD: u32 = 1000;
-
 pub struct Supervisor {
     policy: SandboxPolicy,
     listener: SeccompListener,
@@ -74,11 +70,11 @@ impl Supervisor {
     ///
     /// Mechanism:
     ///  1. Open `replacement` on the supervisor side.
-    ///  2. Inject the fd into the supervised process as `INJECTED_FD` (no
-    ///     O_CLOEXEC so the fd survives the exec).
-    ///  3. Write "/proc/self/fd/<INJECTED_FD>" onto the child's stack below the
-    ///     red zone via process_vm_writev (stack is always writable and present
-    ///     after any exec, unlike a pre-mapped scratch page).
+    ///  2. Inject the fd into the supervised process, letting the kernel choose
+    ///     an unused target fd (no O_CLOEXEC so the fd survives the exec).
+    ///  3. Write "/proc/self/fd/<allocated-fd>" onto the child's stack below
+    ///     the red zone via process_vm_writev (stack is always writable and
+    ///     present after any exec, unlike a pre-mapped scratch page).
     ///  4. Swap the exec path pointer register (rdi for execve, rsi for
     ///     execveat) to point at that stack location.
     ///  5. Send CONTINUE — the kernel executes the replacement binary.
@@ -92,17 +88,18 @@ impl Supervisor {
             })
             .with_context(|| format!("opening replacement binary: {replacement}"))?;
 
-        // Inject the fd into the supervised process.  newfd_flags = 0: no
-        // O_CLOEXEC, so the fd is visible as /proc/self/fd/INJECTED_FD during exec.
+        // Inject the fd into the supervised process. newfd_flags = 0: no
+        // O_CLOEXEC, so the fd is visible as /proc/self/fd/<n> during exec.
         let inject_result = self
             .listener
-            .add_fd(notif.id, host_file.as_raw_fd(), INJECTED_FD, 0);
+            .add_fd(notif.id, host_file.as_raw_fd(), None, 0);
         drop(host_file); // supervisor's copy no longer needed
-        inject_result.context("injecting replacement binary fd into supervised process")?;
+        let injected_fd =
+            inject_result.context("injecting replacement binary fd into supervised process")?;
 
-        // Write "/proc/self/fd/INJECTED_FD\0" to the child's stack and rewrite
-        // the path pointer register in one ptrace pass.
-        let path = format!("/proc/self/fd/{INJECTED_FD}\0");
+        // Write "/proc/self/fd/<allocated-fd>\0" to the child's stack and
+        // rewrite the path pointer register in one ptrace pass.
+        let path = format!("/proc/self/fd/{injected_fd}\0");
         write_path_and_swap_pointer(notif.pid as i32, notif.syscall_nr, path.as_bytes())
             .context("rewriting exec path pointer register")?;
 

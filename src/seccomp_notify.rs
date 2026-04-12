@@ -89,23 +89,31 @@ impl SeccompListener {
         Err(err).context("SECCOMP_IOCTL_NOTIF_ID_VALID")
     }
 
-    /// Inject `srcfd` (supervisor-side) into the supervised process as `child_fd`.
+    /// Inject `srcfd` (supervisor-side) into the supervised process.
     ///
-    /// `newfd_flags` is applied to the fd in the target process.  Pass `0` when
-    /// the fd must survive exec (e.g. for `/proc/self/fd/N` path rewriting); pass
-    /// `O_CLOEXEC` for fds that should be cleaned up automatically.
+    /// When `child_fd` is `Some`, request that exact descriptor number in the
+    /// target. When it is `None`, let the kernel allocate a free descriptor and
+    /// return its number.
+    ///
+    /// `newfd_flags` is applied to the fd in the target process. Pass `0` when
+    /// the fd must survive exec (e.g. for `/proc/self/fd/N` path rewriting);
+    /// pass `O_CLOEXEC` for fds that should be cleaned up automatically.
     pub fn add_fd(
         &self,
         notif_id: u64,
         srcfd: i32,
-        child_fd: u32,
+        child_fd: Option<u32>,
         newfd_flags: u32,
     ) -> Result<i32> {
+        let (flags, newfd) = match child_fd {
+            Some(fd) => (libc::SECCOMP_ADDFD_FLAG_SETFD as libc::c_uint, fd),
+            None => (0, 0),
+        };
         let mut addfd = libc::seccomp_notif_addfd {
             id: notif_id,
-            flags: libc::SECCOMP_ADDFD_FLAG_SETFD as libc::c_uint,
+            flags,
             srcfd: srcfd as u32,
-            newfd: child_fd,
+            newfd,
             newfd_flags,
         };
 

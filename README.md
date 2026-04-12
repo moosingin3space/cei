@@ -15,7 +15,7 @@ The mechanism:
 3. **Supervisor loop** — For each notification the kernel delivers, the supervisor consults the policy and either:
    - **Allows** — sends `SECCOMP_USER_NOTIF_FLAG_CONTINUE`.
    - **Denies** — sends `EPERM`.
-   - **Redirects** — opens the replacement binary, injects its fd into the child process as a fixed fd number via `SECCOMP_IOCTL_NOTIF_ADDFD`, writes the path `/proc/self/fd/<N>` onto the child's stack below the x86-64 red zone via `process_vm_writev`, rewrites the exec path pointer register (`rdi` for `execve`, `rsi` for `execveat`) via ptrace, then sends `CONTINUE`. The kernel executes the replacement binary.
+   - **Redirects** — opens the replacement binary, injects its fd into the child process via `SECCOMP_IOCTL_NOTIF_ADDFD` and lets the kernel choose a free target fd, writes the path `/proc/self/fd/<N>` for that allocated fd onto the child's stack below the x86-64 red zone via `process_vm_writev`, rewrites the exec path pointer register (`rdi` for `execve`, `rsi` for `execveat`) via ptrace, then sends `CONTINUE`. The kernel executes the replacement binary.
 
 Using the child's stack for the injected path string is TOCTOU-safe and works regardless of where the original pathname lived (`.rodata`, heap, another stack frame).
 

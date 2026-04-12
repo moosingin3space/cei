@@ -31,7 +31,7 @@ The design uses multiple layers because no single mechanism covers all requireme
 
 4. memfd scratch page
 - Shared mapping used for TOCTOU-safe path strings.
-- Supervisor writes `/proc/self/fd/<N>` into fixed slots.
+- Supervisor writes `/proc/self/fd/<N>` using the fd number allocated by `SECCOMP_IOCTL_NOTIF_ADDFD`.
 - Child uses read-only mapping address as rewritten exec path pointer.
 
 ## Write-Confinement Policy
