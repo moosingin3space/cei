@@ -1,17 +1,17 @@
 #![deny(unsafe_code)]
 
-mod launch;
-mod policy;
-mod ptrace_rewrite;
-mod seccomp_notify;
-mod supervisor;
-
 use std::ffi::CString;
 use std::io::{IoSlice, IoSliceMut};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
+use cei::launch;
+use cei::policy;
+use cei::proxy;
+use cei::seccomp_notify;
+use cei::supervisor;
 use clap::{ArgAction, Parser, Subcommand};
 use nix::cmsg_space;
 use nix::errno::Errno;
@@ -79,6 +79,20 @@ enum Commands {
         args: Vec<String>,
     },
 
+    /// Run an HTTP proxy that enforces a network policy.
+    ///
+    /// The proxy binds to 127.0.0.1 and enforces an allowlist of hosts.
+    HttpProxy {
+        /// Allowed host for the proxy (repeatable).
+        /// If no hosts are specified, all hosts are allowed.
+        #[arg(long = "allow", value_name = "HOST", action = ArgAction::Append)]
+        allows: Vec<String>,
+
+        /// Port to listen on. Defaults to 0 (OS-assigned).
+        #[arg(long, default_value = "0")]
+        port: u16,
+    },
+
     /// Run a command under execve interception (used internally by `cei launch`).
     Intercept {
         /// Redirect execve of FROM to TO.  Repeatable.  Both paths must be absolute.
@@ -142,6 +156,7 @@ fn main() -> Result<()> {
                 command_args: args.into_iter().map(Into::into).collect(),
             })
         }
+        Commands::HttpProxy { allows, port } => run_http_proxy(allows, port),
         Commands::Intercept {
             redirects,
             detach_mount,
@@ -149,6 +164,25 @@ fn main() -> Result<()> {
             args,
         } => run_sandboxed(&command, &args, &redirects, detach_mount.as_deref()),
     }
+}
+
+fn run_http_proxy(allows: Vec<String>, port: u16) -> Result<()> {
+    let mut policy = policy::SandboxPolicy::from_current_dir()?;
+    for host in allows {
+        policy = policy.with_allowed_host(host);
+    }
+    let policy = Arc::new(policy);
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("failed to build tokio runtime")?;
+
+    rt.block_on(async {
+        let addr = format!("127.0.0.1:{port}");
+        let listener = proxy::ProxyListener::bind(&addr).await?;
+        listener.run(policy).await
+    })
 }
 
 fn run_sandboxed(
