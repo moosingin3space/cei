@@ -21,7 +21,7 @@ use nix::sys::socket::{
     AddressFamily, ControlMessage, ControlMessageOwned, MsgFlags, SockFlag, SockType, recvmsg,
     sendmsg, socketpair,
 };
-use nix::unistd::{ForkResult, execvp, fork};
+use nix::unistd::{ForkResult, fork};
 use tracing::error;
 
 #[derive(Debug, Parser)]
@@ -58,6 +58,11 @@ enum Commands {
         #[arg(long = "redirect", value_name = "FROM=TO", action = ArgAction::Append)]
         redirects: Vec<String>,
 
+        /// Allowed host for network connections (repeatable).
+        /// Forwarded verbatim to `cei intercept`.
+        #[arg(long = "allow-http-host", value_name = "HOST", action = ArgAction::Append)]
+        allow_http_hosts: Vec<String>,
+
         /// Path to the bwrap binary. Defaults to $BWRAP or which(bwrap).
         #[arg(long, value_name = "PATH")]
         bwrap: Option<PathBuf>,
@@ -85,8 +90,8 @@ enum Commands {
     HttpProxy {
         /// Allowed host for the proxy (repeatable).
         /// If no hosts are specified, all hosts are allowed.
-        #[arg(long = "allow", value_name = "HOST", action = ArgAction::Append)]
-        allows: Vec<String>,
+        #[arg(long = "allow-http-host", value_name = "HOST", action = ArgAction::Append)]
+        allow_http_hosts: Vec<String>,
 
         /// Port to listen on. Defaults to 0 (OS-assigned).
         #[arg(long, default_value = "0")]
@@ -104,6 +109,27 @@ enum Commands {
         )]
         redirects: Vec<String>,
 
+        /// Internal: Host IP of the proxy running on the host side.
+        /// 127.0.0.1 when the network namespace is shared; 10.0.2.2 (slirp4netns
+        /// gateway) when the network namespace is isolated.
+        #[arg(
+            long = "proxy-host",
+            value_name = "HOST",
+            default_value = "127.0.0.1",
+            hide = true
+        )]
+        proxy_host: String,
+
+        /// Internal: Port of the proxy running on the host.
+        /// 0 means no proxy is configured; proxy env vars are not injected.
+        #[arg(
+            long = "proxy-port",
+            value_name = "PORT",
+            default_value = "0",
+            hide = true
+        )]
+        proxy_port: u16,
+
         /// Internal: guest path to lazy-unmount after fork, then drop caps.
         /// Set by `cei launch` when using --bind-fd to pass the cei binary.
         #[arg(long = "detach-mount", value_name = "PATH", hide = true)]
@@ -118,7 +144,9 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .init();
     let cli = Cli::parse();
     match cli.command {
         Commands::Launch {
@@ -126,6 +154,7 @@ fn main() -> Result<()> {
             ro_binds,
             binds,
             redirects,
+            allow_http_hosts,
             bwrap,
             share_net,
             unshare_user,
@@ -149,6 +178,7 @@ fn main() -> Result<()> {
                 extra_ro_binds,
                 extra_binds,
                 redirects,
+                allow_http_hosts,
                 bwrap_path: bwrap,
                 share_net,
                 unshare_user,
@@ -156,19 +186,31 @@ fn main() -> Result<()> {
                 command_args: args.into_iter().map(Into::into).collect(),
             })
         }
-        Commands::HttpProxy { allows, port } => run_http_proxy(allows, port),
+        Commands::HttpProxy {
+            allow_http_hosts,
+            port,
+        } => run_http_proxy(allow_http_hosts, port),
         Commands::Intercept {
             redirects,
+            proxy_host,
+            proxy_port,
             detach_mount,
             command,
             args,
-        } => run_sandboxed(&command, &args, &redirects, detach_mount.as_deref()),
+        } => run_sandboxed(
+            &command,
+            &args,
+            &redirects,
+            &proxy_host,
+            proxy_port,
+            detach_mount.as_deref(),
+        ),
     }
 }
 
-fn run_http_proxy(allows: Vec<String>, port: u16) -> Result<()> {
+fn run_http_proxy(allow_http_hosts: Vec<String>, port: u16) -> Result<()> {
     let mut policy = policy::SandboxPolicy::from_current_dir()?;
-    for host in allows {
+    for host in allow_http_hosts {
         policy = policy.with_allowed_host(host);
     }
     let policy = Arc::new(policy);
@@ -189,6 +231,8 @@ fn run_sandboxed(
     command: &str,
     args: &[String],
     raw_redirects: &[String],
+    proxy_host: &str,
+    proxy_port: u16,
     detach_mount: Option<&Path>,
 ) -> Result<()> {
     // Socketpair used to pass the seccomp listener fd from child to parent.
@@ -222,7 +266,14 @@ fn run_sandboxed(
         ForkResult::Child => {
             drop(parent_sock);
             // child_main never returns on success (exec replaces us).
-            let e = child_main(child_sock.as_raw_fd(), command, args).unwrap_err();
+            let e = child_main(
+                child_sock.as_raw_fd(),
+                command,
+                args,
+                proxy_host,
+                proxy_port,
+            )
+            .unwrap_err();
             error!(message = "cei: child setup failed", error = %e);
             std::process::exit(1);
         }
@@ -238,7 +289,13 @@ fn run_sandboxed(
 
 /// Child: install seccomp USER_NOTIF on execve, hand listener fd to the
 /// parent supervisor, then exec the target program.
-fn child_main(sock: RawFd, command: &str, args: &[String]) -> Result<()> {
+fn child_main(
+    sock: RawFd,
+    command: &str,
+    args: &[String],
+    proxy_host: &str,
+    proxy_port: u16,
+) -> Result<()> {
     // Required before seccomp installation.
     set_no_new_privs().context("prctl PR_SET_NO_NEW_PRIVS")?;
 
@@ -255,16 +312,51 @@ fn child_main(sock: RawFd, command: &str, args: &[String]) -> Result<()> {
         c_args.push(CString::new(a.as_str()).context("argument contains NUL")?);
     }
 
+    let env = build_proxy_env(proxy_host, proxy_port);
+
     // This exec is itself intercepted; the supervisor will allow it.
-    execvp(&c_cmd, &c_args).context("execvp")?;
+    nix::unistd::execvpe(&c_cmd, &c_args, &env).context("execvpe")?;
     unreachable!()
+}
+
+fn build_proxy_env(host: &str, port: u16) -> Vec<CString> {
+    // Collect current env, stripping any pre-existing proxy vars.
+    let mut env: Vec<CString> = std::env::vars_os()
+        .filter(|(k, _)| {
+            !matches!(
+                k.to_str(),
+                Some("http_proxy")
+                    | Some("https_proxy")
+                    | Some("HTTP_PROXY")
+                    | Some("HTTPS_PROXY")
+                    | Some("no_proxy")
+            )
+        })
+        .map(|(k, v)| {
+            CString::new(format!("{}={}", k.to_string_lossy(), v.to_string_lossy()))
+                .expect("env var contains NUL")
+        })
+        .collect();
+
+    // Port 0 means no proxy configured (e.g. direct `cei intercept` invocation in tests).
+    if port == 0 {
+        return env;
+    }
+
+    let proxy_url = format!("http://{host}:{port}");
+    // Inject both cases; different tools check different conventions.
+    for var in &["http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"] {
+        env.push(CString::new(format!("{var}={proxy_url}")).unwrap());
+    }
+    env.push(CString::new("no_proxy=localhost,127.0.0.1").unwrap());
+    env
 }
 
 /// Parent: receive listener fd from child, run supervisor event loop.
 fn parent_main(sock: OwnedFd, child_pid: i32, policy: policy::SandboxPolicy) -> Result<()> {
     let fd = recv_fd(sock.as_raw_fd()).context("receiving listener fd from child")?;
     let listener = seccomp_notify::SeccompListener::from_owned_fd(fd);
-    let sup = supervisor::Supervisor::new(policy, listener);
+    let sup = supervisor::Supervisor::new(Arc::new(policy), listener);
     let code = sup.run_until_exit(child_pid)?;
     std::process::exit(code);
 }

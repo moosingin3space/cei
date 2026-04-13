@@ -7,7 +7,7 @@ edition = "2024"
 anyhow = "1.0.100"
 clap = { version = "4.5.40", features = ["derive"] }
 libc = "0.2.177"
-nix = { version = "0.31.2", features = ["fs", "mount", "process", "ptrace", "signal", "socket", "uio"] }
+nix = { version = "0.31.2", features = ["fs", "mount", "poll", "process", "ptrace", "signal", "socket", "uio"] }
 rustix = { version = "0.38", features = ["thread"] }
 tokio = { version = "1", features = ["full"] }
 hyper = { version = "1", features = ["full"] }
@@ -18,7 +18,9 @@ tracing-subscriber = { version = "0.3.18", features = ["fmt"] }
 
 [dev-dependencies]
 assert_cmd = "2"
+ntest = "0.9"
 predicates = "3"
+serial_test = "3"
 tempfile = "3"
 tokio-rustls = "0.26"
 rustls-pemfile = "2"
