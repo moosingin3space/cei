@@ -1,6 +1,7 @@
 use std::fs::File;
 use std::io::IoSliceMut;
 use std::os::fd::AsRawFd;
+use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use nix::sys::uio::{RemoteIoVec, process_vm_readv};
@@ -13,12 +14,12 @@ use crate::seccomp_notify::{ExecNotification, SeccompListener};
 use tracing::{debug, trace};
 
 pub struct Supervisor {
-    policy: SandboxPolicy,
+    policy: Arc<SandboxPolicy>,
     listener: SeccompListener,
 }
 
 impl Supervisor {
-    pub fn new(policy: SandboxPolicy, listener: SeccompListener) -> Self {
+    pub fn new(policy: Arc<SandboxPolicy>, listener: SeccompListener) -> Self {
         Self { policy, listener }
     }
 

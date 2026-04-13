@@ -10,6 +10,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 #[tokio::test]
+#[ntest::timeout(10_000)]
 async fn test_proxy_connect_allow() -> Result<()> {
     // 1. Setup a dummy target server (echo server)
     let target_listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -62,6 +63,7 @@ async fn test_proxy_connect_allow() -> Result<()> {
 }
 
 #[tokio::test]
+#[ntest::timeout(10_000)]
 async fn test_proxy_connect_deny() -> Result<()> {
     // 1. Setup proxy with a different host in allowlist
     let mut policy = SandboxPolicy::from_current_dir()?;
@@ -93,6 +95,7 @@ async fn test_proxy_connect_deny() -> Result<()> {
 }
 
 #[tokio::test]
+#[ntest::timeout(10_000)]
 async fn test_proxy_plain_http_allow() -> Result<()> {
     // 1. Setup a dummy HTTP target server
     let target_listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -150,6 +153,7 @@ async fn test_proxy_plain_http_allow() -> Result<()> {
 }
 
 #[tokio::test]
+#[ntest::timeout(10_000)]
 async fn test_proxy_https_allow() -> Result<()> {
     use std::sync::Arc;
     use tokio_rustls::rustls;
@@ -244,6 +248,7 @@ async fn test_proxy_https_allow() -> Result<()> {
 }
 
 #[tokio::test]
+#[ntest::timeout(10_000)]
 async fn test_proxy_reject_http2() -> Result<()> {
     // 1. Setup proxy
     let policy = SandboxPolicy::from_current_dir()?;

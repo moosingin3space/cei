@@ -2,7 +2,9 @@ use assert_cmd::Command;
 use predicates::prelude::*;
 
 fn cei() -> Command {
-    Command::cargo_bin("cei").unwrap()
+    let mut cmd = Command::cargo_bin("cei").unwrap();
+    cmd.timeout(std::time::Duration::from_secs(10));
+    cmd
 }
 
 // ---------------------------------------------------------------------------
