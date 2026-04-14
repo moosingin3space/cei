@@ -162,7 +162,7 @@ async fn test_proxy_https_allow() -> Result<()> {
     let subject_alt_names = vec!["localhost".to_string(), "127.0.0.1".to_string()];
     let cert = rcgen::generate_simple_self_signed(subject_alt_names)?;
     let cert_der = cert.cert.der().to_vec();
-    let key_der = cert.key_pair.serialize_der();
+    let key_der = cert.signing_key.serialize_der();
 
     let server_config = rustls::ServerConfig::builder()
         .with_no_client_auth()
