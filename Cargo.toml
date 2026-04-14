@@ -8,7 +8,7 @@ anyhow = "1.0.100"
 clap = { version = "4.5.40", features = ["derive"] }
 libc = "0.2.177"
 nix = { version = "0.31.2", features = ["fs", "mount", "poll", "process", "ptrace", "signal", "socket", "uio"] }
-rustix = { version = "0.38", features = ["thread"] }
+rustix = { version = "1", features = ["thread"] }
 tokio = { version = "1", features = ["full"] }
 hyper = { version = "1", features = ["full"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
