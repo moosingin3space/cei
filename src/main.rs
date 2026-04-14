@@ -385,9 +385,9 @@ fn detach_and_harden(path: &Path) -> Result<()> {
     //    inside the user namespace; zero it out.  Outside a user namespace
     //    the sets are already empty and set_capabilities is a no-op.
     if let Ok(mut caps) = rustix::thread::capabilities(None) {
-        caps.effective = rustix::thread::CapabilityFlags::empty();
-        caps.permitted = rustix::thread::CapabilityFlags::empty();
-        caps.inheritable = rustix::thread::CapabilityFlags::empty();
+        caps.effective = rustix::thread::CapabilitySet::empty();
+        caps.permitted = rustix::thread::CapabilitySet::empty();
+        caps.inheritable = rustix::thread::CapabilitySet::empty();
         rustix::thread::set_capabilities(None, caps).ok();
     }
 
