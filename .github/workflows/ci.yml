@@ -34,7 +34,7 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Install bubblewrap
-        uses: chainguard-dev/melange/.github/actions/setup-bubblewrap@v0.50.1
+        uses: chainguard-dev/melange/.github/actions/setup-bubblewrap@v0.50.6
 
       - name: fmt
         run: cargo fmt --all -- --check
